@@ -1,0 +1,268 @@
+#!/usr/bin/env bash 
+
+# vim: ts=8:sts=3
+
+###################################################################
+# Filename     : mail-dxs					  #
+# Description  : Mail Data Xchange Service			  #
+# Version      : 0.1						  #
+###################################################################
+
+#
+# mail-dxs -- Mail Data Xchange Service
+# 
+
+BASENAME=/usr/bin/basename
+CAT=/bin/cat
+CUT=/usr/bin/cut
+DATE=/bin/date
+GREP=/bin/grep
+LFTP=/usr/bin/lftp
+FORMAIL=/usr/bin/formail
+EXPAND=/usr/bin/expand
+FIND=/usr/bin/find
+MKDIR=/bin/mkdir
+MV=/bin/mv
+MUNPACK=/usr/bin/munpack
+RM=/bin/rm
+SED=/bin/sed
+SENDMAIL=/usr/sbin/sendmail
+
+# temporarily location used during script run-time
+MAIL_TMP=/tmp/mail-dxs
+
+# put uploaded attachments in unique directory name
+FTP_UNIQUE_DIR=$( ${DATE} +%s )
+
+mail_dxs_prefix=
+mail_dxs_etc=${mail_dxs_prefix}/etc/mail-dxs
+mail_dxs_providers=${mail_dxs_etc}/providers
+mail_dxs_version="0.1"
+mail_dxs=$( ${BASENAME} -- $0 )
+
+#
+# Synopsis messages
+#
+
+mail_dxs_usage_top="==>> ${mail_dxs} -- version ${mail_dxs_version}"
+mail_dxs_usage="${mail_dxs_usage_top}\n==>> ${mail_dxs} [process|tidy]\n==>> For more information of the commands run ${mail_dxs} help [command]"
+mail_dxs_usage_process="${mail_dxs_usage_top}\n==>> Usage: ${mail_dxs} process -f <config> <mail>\n==>> Processes the given <mail> using configuration file <config>"
+mail_dxs_usage_tidy="${mail_dxs_usage_top}\n==>> Usage: ${mail_dxs} tidy\n==>> Performs a clean up of the old files for the available Data Xchange Services."
+
+# 
+# Function definitions
+#
+
+#
+# errmsg()
+# Prints an error message and exits
+#
+
+function errmsg() { echo -e "$*" >&2 && exit 1 ; }
+
+#
+# warnmsg() 
+# Prints a warning message
+#
+
+function wanrmsg() { echo -e "$*" >&2 ; }
+
+#
+# mail_dxs_process_mail()
+# Processes the received mail and extracts the attachments
+#
+
+function mail_dxs_process_mail() {
+   local mail_orig=$1
+   local mail_file=$( ${BASENAME} ${mail_orig} )
+   local mail_dir=${MAIL_TMP}/${mail_file}.$$
+
+   ${MKDIR} -p ${mail_dir}/attachments && ${MV} ${mail_orig} ${mail_dir}
+
+   # extract the attachments
+   cd ${mail_dir}/attachments && ${MUNPACK} ${mail_dir}/${mail_file}
+}
+
+# 
+# mail_dxs_upload_attachments() 
+# Uploads the extracted attachments to an FTP server
+#
+
+function mail_dxs_upload_attachments() { 
+   local mail_orig=$1
+   local mail_file=$( ${BASENAME} ${mail_orig} )
+   local mail_dir=${MAIL_TMP}/${mail_file}.$$
+   
+   local attachments=$( ${FIND} ${mail_dir}/attachments -type f )
+
+   # upload the attachments 
+   ${LFTP} << __EOF__
+open ${FTP_HOST}
+user ${FTP_USER} ${FTP_PASS}
+mkdir ${FTP_UNIQUE_DIR}
+cd ${FTP_UNIQUE_DIR}
+$( for file in ${attachments}; do
+      echo "put '${file}' &"
+   done )
+exit
+__EOF__
+}
+
+#
+# mail_dxs_notify_customers
+# Informs the customers for the shared files
+#
+
+function mail_dxs_notify_customers() {
+   local mail_orig=$1
+   local mail_file=$( ${BASENAME} ${mail_orig} )
+   local mail_dir=${MAIL_TMP}/${mail_file}.$$
+
+   local attachments=$( ${FIND} ${mail_dir}/attachments -type f )
+
+   # get the senders address
+   mail_from=$( ${FORMAIL} -x From: < ${mail_dir}/${mail_file} )
+
+   # inform the recipients
+   ${SENDMAIL} -t << __EOF__
+$( ${CAT} ${MAIL_HEADER} | ${SED} -e "s|@MAIL_FROM@|${mail_from}|" )
+
+<ul>
+$( for file in ${attachments}; do 
+      # format the FTP URL
+      ftp_file=$( ${BASENAME} "${file}" | ${SED} -e 's| |%20|' )
+      echo "<li><a href="ftp://${FTP_USER}:${FTP_PASS}@${FTP_HOST_EXT}/${FTP_UNIQUE_DIR}/${ftp_file}">$( ${BASENAME} ${file} )</a></li>"
+   done )
+</ul>
+
+$( ${CAT} ${MAIL_FOOTER} )
+__EOF__
+
+   # inform the sender
+   ${SENDMAIL} -t << __EOF__
+From: no-reply@example.com
+To: ${mail_from}
+Subject: Mail Data Xchange: Recipients informed
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+<html>
+<head>
+<body>
+<h3>Mail Data Xchange Service</h3>
+<p>This is an automatically generated e-mail, please do not reply to it.</p>
+<p>The following recipients were informed about the files you have shared with them:</p>
+<ul>
+   <li>$( ${SED} -ne 's|^To: \(.*\)|\1|p' ${MAIL_HEADER} )</li>
+</ul>
+
+<p>The files you have shared with them can be seen below:</p>
+<ul>
+$( for file in ${attachments}; do 
+      # format the FTP URL
+      ftp_file=$( ${BASENAME} "${file}" | ${SED} -e 's| |%20|' )
+      echo "<li><a href="ftp://${FTP_USER}:${FTP_PASS}@${FTP_HOST_EXT}/${FTP_UNIQUE_DIR}/${ftp_file}">$( ${BASENAME} ${file} )</a></li>"
+   done )
+</ul>
+
+<p><strong>Please keep in mind that the files will be kept by the Mail Data Xchange Service for 2 weeks.</strong></p>
+<p><strong>After that period the files will be automatically removed from our servers.</strong></p>
+
+<p>Thank you for using <strong>Mail Data Xchange Service!</strong></p>
+</body>
+</html>
+__EOF__
+}
+
+# 
+# mail_dxs_cleanup()
+# Cleans up the temporary files created during run-time
+# 
+
+function mail_dxs_cleanup() {
+   local mail_orig=$1
+   local mail_file=$( ${BASENAME} ${mail_orig} )
+   local mail_dir=${MAIL_TMP}/${mail_file}.$$
+
+   ${RM} -rf ${mail_dir}
+}
+
+#
+# mail_dxs_tidy()
+# Tidy up old files and directories on the FTP server
+#
+
+function mail_dxs_tidy() {
+   # files older than 14 days are removed
+   backlog_days=14
+
+   # get the available providers
+   local avail_providers=$( ${FIND} ${mail_dxs_providers} -type f -name "*.conf" )
+
+   for provider in ${avail_providers}; do
+      ftp_home=$( ${GREP} -m 1 -E '^FTP_HOME' ${provider} | ${CUT} -d '=' -f 2 | ${SED} -e 's|^[ \t]*||g' -e 's|[ \t]*$||g' )
+      ftp_user=$( ${GREP} -m 1 -E '^FTP_USER' ${provider} | ${CUT} -d '=' -f 2 | ${SED} -e 's|^[ \t]*||g' -e 's|[ \t]*$||g' )
+      
+      if [ -d "${ftp_home}/${ftp_user}" ]
+      then
+	 cd ${ftp_home}/${ftp_user}
+	 ${FIND} . -maxdepth 1 -type d -not \( -name '.' -o -name 'logs' \) -mtime +${backlog_days} -exec ${RM} -rf {} \; 
+      fi
+   done
+}
+
+# 
+# End of function definitions
+#
+
+#
+# main()
+#
+
+[ "$#" -eq 0 ] && errmsg ${mail_dxs_usage}
+
+case "$1" in
+   # process the mail
+   process) 
+      shift; while getopts :f: arg; do case ${arg} in
+	 f) mail_dxs_config=${OPTARG};;
+	 ?) errmsg ${mail_dxs_usage};;
+      esac; done; shift $(( ${OPTIND} - 1 ))
+
+      [ $# -eq 0 ] && errmsg ${mail_dxs_usage}
+
+      [ -f "${mail_dxs_config}" ] && . ${mail_dxs_config} || \
+	    errmsg "==>> The provided configuration file does not exists: ${mail_dxs_config}"
+
+      [ ! -f "$1" ] && errmsg "==>> The provided mail file does not exists: $1"
+
+      # process the mail
+      mail_dxs_process_mail $1
+      mail_dxs_upload_attachments $1
+      mail_dxs_notify_customers $1
+      mail_dxs_cleanup $1
+      ;;
+   tidy)
+      [ $# -eq 1 ] && mail_dxs_tidy || errmsg ${mail_dxs_usage_tidy}
+      ;;
+   help)
+      [ $# -ne 2 ] && errmsg ${mail_dxs_usage}
+      case "$2" in
+	 process)
+	    errmsg ${mail_dxs_usage_process}
+	    ;;
+	 tidy)
+	    errmsg ${mail_dxs_usage_tidy}
+	    ;;
+	 *)
+	    errmsg ${mail_dxs_usage}
+	    ;;
+      esac
+      ;;
+   *) 
+      errmsg ${mail_dxs_usage}
+      ;;
+esac
+
+exit 0
+

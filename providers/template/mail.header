@@ -1,0 +1,15 @@
+From: no-reply@example.com
+To: john@example.com larry@example.com ann@example.com
+Subject: Mail Data Xchange: Files were shared with you
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+<html>
+<head>
+</head>
+<body>
+<h3>Mail Data Xchange Service</h3>
+<p>This is an automatically generated e-mail, please do not reply to it.</p>
+<p>@MAIL_FROM@ wishes to share files with you through the <strong>Mail Data Xchange Service</strong>.</p>
+<p>Below you will find the files that were shared with you.</p>
+
